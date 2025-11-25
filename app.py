@@ -40,7 +40,7 @@ def bearing(lat1, lon1, lat2, lon2):
     y = cos(lat1)*sin(lat2) - sin(lat1)*cos(lat2)*cos(dLon)
     return (degrees(atan2(x, y)) + 360) % 360
 
-def interpolate_great_circle(lat1, lon1, lat2, lon2, steps=100):
+def interpolate_great_circle(lat1, lon1, lat2, lon2, steps=50):
     points = []
     lat1_r, lon1_r = radians(lat1), radians(lon1)
     lat2_r, lon2_r = radians(lat2), radians(lon2)
@@ -75,7 +75,7 @@ def generate_map(origin, destination, takeoff_str, landing_str):
     landing_utc = localize_time(landing_naive, tz_d).astimezone(pytz.UTC)
 
     # Flight path
-    path = interpolate_great_circle(lat1, lon1, lat2, lon2, steps=100)
+    path = interpolate_great_circle(lat1, lon1, lat2, lon2, steps=50)
     total_seconds = int((landing_utc - takeoff_utc).total_seconds())
     step_seconds = total_seconds // (len(path)-1)
     flight_bear = bearing(lat1, lon1, lat2, lon2)
@@ -100,10 +100,15 @@ def generate_map(origin, destination, takeoff_str, landing_str):
     folium.PolyLine(path, color='blue', weight=2).add_to(m)
     return m
 
-# --- Generate map on button click ---
+# --- Store map in session_state to prevent disappearing ---
+if "flight_map" not in st.session_state:
+    st.session_state.flight_map = None
+
 if generate:
     if origin not in iata_coords or destination not in iata_coords:
         st.error("Unknown IATA code")
     else:
-        m = generate_map(origin, destination, takeoff_str, landing_str)
-        st_folium(m, width=800, height=500)
+        st.session_state.flight_map = generate_map(origin, destination, takeoff_str, landing_str)
+
+if st.session_state.flight_map:
+    st_folium(st.session_state.flight_map, width=800, height=500)
