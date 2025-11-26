@@ -1,50 +1,29 @@
 import streamlit as st
 from streamlit_folium import st_folium
 import folium
-from datetime import datetime, timedelta
-from math import radians, degrees, sin, cos, atan2, sqrt
+from datetime import datetime, timezone, timedelta
+from math import radians, degrees, sin, cos, atan2
 from pysolar.solar import get_altitude, get_azimuth
 import pytz
-from timezonefinder import TimezoneFinder
-import csv
+import requests
+from requests.auth import HTTPBasicAuth
 
 st.set_page_config(layout="wide")
-st.title("Flight Sun Position Visualizer")
+st.title("Flight Sun Position with Real Flight Tracks")
 
 # -----------------------------
-# Load airports from uploaded file
+# Sidebar input
 # -----------------------------
-@st.cache_data
-def load_airports():
-    airports = {}
-    with open("airports.dat", newline='', encoding='utf-8') as csvfile:
-        reader = csv.reader(csvfile)
-        for row in reader:
-            iata = row[4]
-            if iata != "\\N" and iata:  # skip missing codes
-                airports[iata.upper()] = {
-                    'name': row[1],
-                    'lat': float(row[6]),
-                    'lon': float(row[7])
-                }
-    return airports
+st.sidebar.header("Flight Information")
 
-airports = load_airports()
+dep_iata = st.sidebar.text_input("Departure Airport (IATA)", "IST").upper()
+arr_iata = st.sidebar.text_input("Arrival Airport (IATA)", "JFK").upper()
+dep_date_str = st.sidebar.text_input("Departure Date (YYYY-MM-DD)", "2023-12-01")
+generate_button = st.sidebar.button("Generate Flight Map")
 
 # -----------------------------
 # Helper functions
 # -----------------------------
-def interpolate_great_circle(lat1, lon1, lat2, lon2, steps=100):
-    lat1_rad, lon1_rad, lat2_rad, lon2_rad = map(radians, [lat1, lon1, lat2, lon2])
-    points = []
-    for i in range(steps + 1):
-        f = i / steps
-        # Linear interpolation approximation
-        lat = lat1 + (lat2 - lat1) * f
-        lon = lon1 + (lon2 - lon1) * f
-        points.append((lat, lon))
-    return points
-
 def calculate_heading(lat1, lon1, lat2, lon2):
     lon1, lon2, lat1, lat2 = map(radians, [lon1, lon2, lat1, lat2])
     dlon = lon2 - lon1
@@ -57,95 +36,87 @@ def get_side_of_plane(azimuth_deg, heading_deg):
     diff = (azimuth_deg - heading_deg + 360) % 360
     return "left" if diff > 180 else "right"
 
-def local_to_utc(lat, lon, local_dt):
-    tf = TimezoneFinder()
-    tz_str = tf.timezone_at(lat=lat, lng=lon)
-    if tz_str is None:
-        tz_str = 'UTC'
-    local_tz = pytz.timezone(tz_str)
-    return local_tz.localize(local_dt).astimezone(pytz.UTC)
+def fetch_flights(dep_iata, dep_date_str):
+    username = "vikabarkun789"
+    password = "Klepa789*"
+    start_dt = datetime.fromisoformat(dep_date_str + "T00:00:00").replace(tzinfo=timezone.utc)
+    end_dt = start_dt + timedelta(days=1)
+    start_epoch = int(start_dt.timestamp())
+    end_epoch = int(end_dt.timestamp())
+    
+    url = f"https://opensky-network.org/api/flights/departure?airport={dep_iata}&begin={start_epoch}&end={end_epoch}"
+    response = requests.get(url, auth=HTTPBasicAuth(username, password))
+    if response.status_code == 200:
+        return response.json()
+    else:
+        st.error(f"OpenSky API Error: {response.status_code}")
+        return []
 
 # -----------------------------
-# Sidebar input
-# -----------------------------
-st.sidebar.header("Flight Information")
-
-dep_iata = st.sidebar.text_input("Departure Airport (IATA)", "IST").upper()
-arr_iata = st.sidebar.text_input("Arrival Airport (IATA)", "JFK").upper()
-dep_time_str = st.sidebar.text_input("Departure Local Time (YYYY-MM-DD HH:MM)", "2023-12-01 08:00")
-arr_time_str = st.sidebar.text_input("Arrival Local Time (YYYY-MM-DD HH:MM)", "2023-12-01 11:00")
-
-generate_button = st.sidebar.button("Generate Flight Map")
-
-# -----------------------------
-# Map generation
+# Generate map
 # -----------------------------
 if generate_button:
-    try:
-        if dep_iata not in airports or arr_iata not in airports:
-            st.error("Airport code not found in database!")
-            st.stop()
-
-        dep_data = airports[dep_iata]
-        arr_data = airports[arr_iata]
-
-        dep_dt_local = datetime.fromisoformat(dep_time_str)
-        arr_dt_local = datetime.fromisoformat(arr_time_str)
-
-        dep_dt_utc = local_to_utc(dep_data['lat'], dep_data['lon'], dep_dt_local)
-        arr_dt_utc = local_to_utc(arr_data['lat'], arr_data['lon'], arr_dt_local)  # fixed typo
-
-        # Build map
-        m = folium.Map(
-            location=[(dep_data['lat'] + arr_data['lat'])/2,
-                      (dep_data['lon'] + arr_data['lon'])/2],
-            zoom_start=3,
-            tiles="CartoDB positron"
-        )
-
-        # Airport markers
-        folium.Marker(
-            location=[dep_data['lat'], dep_data['lon']],
-            popup=f"{dep_iata} Departure",
-            icon=folium.Icon(color="green", icon="plane", prefix="fa")
-        ).add_to(m)
-
-        folium.Marker(
-            location=[arr_data['lat'], arr_data['lon']],
-            popup=f"{arr_iata} Arrival",
-            icon=folium.Icon(color="red", icon="plane", prefix="fa")
-        ).add_to(m)
-
-        # Flight path
-        path_points = interpolate_great_circle(dep_data['lat'], dep_data['lon'],
-                                               arr_data['lat'], arr_data['lon'], steps=100)
-        folium.PolyLine(path_points, color="blue", weight=3).add_to(m)
-
-        dt_step = (arr_dt_utc - dep_dt_utc) / len(path_points)
-
-        for i, (lat, lon) in enumerate(path_points):
-            current_time = dep_dt_utc + i * dt_step
-            if i > 0:
-                heading = calculate_heading(path_points[i-1][0], path_points[i-1][1], lat, lon)
+    flights = fetch_flights(dep_iata, dep_date_str)
+    
+    if not flights:
+        st.warning("No flights found for this date.")
+    else:
+        # Pick the first matching flight to the arrival airport
+        selected_flight = None
+        for f in flights:
+            if f.get('estArrivalAirport') == arr_iata:
+                selected_flight = f
+                break
+        if selected_flight is None:
+            st.warning("No flights found from this departure to arrival airport.")
+        else:
+            st.write(f"Displaying flight ICAO24: {selected_flight['icao24']}")
+            
+            # Fetch track
+            username = "vikabarkun789"
+            password = "Klepa789*"
+            dep_time_epoch = selected_flight['firstSeen']
+            track_url = f"https://opensky-network.org/api/tracks/all?icao24={selected_flight['icao24']}&time={dep_time_epoch}"
+            response = requests.get(track_url, auth=HTTPBasicAuth(username, password))
+            if response.status_code != 200:
+                st.error("Failed to fetch flight track.")
             else:
-                heading = 90
-
-            alt = get_altitude(lat, lon, current_time)
-            azi = get_azimuth(lat, lon, current_time)
-            side = get_side_of_plane(azi, heading)
-
-            tooltip_text = f"Time: {current_time.strftime('%Y-%m-%d %H:%M UTC')}\nSun Side: {side}\nSun Altitude: {alt:.1f}°"
-
-            if alt > 0:
-                folium.CircleMarker([lat, lon], radius=6, color="orange",
-                                    fill=True, fill_opacity=0.9, tooltip=tooltip_text).add_to(m)
-            else:
-                folium.CircleMarker([lat, lon], radius=4, color="gray",
-                                    fill=True, fill_opacity=0.3, tooltip=tooltip_text).add_to(m)
-
-        # Persist map in session state
-        st.session_state['flight_map'] = m
-        st_folium(st.session_state['flight_map'], width=900, height=600)
-
-    except Exception as e:
-        st.error(f"Error: {e}")
+                track_data = response.json().get('path', [])
+                
+                if not track_data:
+                    st.warning("No track data available.")
+                else:
+                    # Build map
+                    mid_lat = (track_data[0][0] + track_data[-1][0]) / 2
+                    mid_lon = (track_data[0][1] + track_data[-1][1]) / 2
+                    m = folium.Map(location=[mid_lat, mid_lon], zoom_start=3, tiles="CartoDB positron")
+                    
+                    # Airport markers
+                    folium.Marker(location=[track_data[0][0], track_data[0][1]], popup=f"{dep_iata} Departure", icon=folium.Icon(color="green", icon="plane", prefix="fa")).add_to(m)
+                    folium.Marker(location=[track_data[-1][0], track_data[-1][1]], popup=f"{arr_iata} Arrival", icon=folium.Icon(color="red", icon="plane", prefix="fa")).add_to(m)
+                    
+                    # Plot track with sun markers
+                    for i in range(len(track_data)):
+                        lat, lon, ts = track_data[i]
+                        current_time = datetime.fromtimestamp(ts, tz=timezone.utc)
+                        
+                        if i > 0:
+                            heading = calculate_heading(track_data[i-1][0], track_data[i-1][1], lat, lon)
+                        else:
+                            heading = 90
+                        
+                        alt = get_altitude(lat, lon, current_time)
+                        azi = get_azimuth(lat, lon, current_time)
+                        side = get_side_of_plane(azi, heading)
+                        
+                        tooltip = f"Time: {current_time.strftime('%Y-%m-%d %H:%M UTC')}\nSun Side: {side}\nSun Altitude: {alt:.1f}°"
+                        
+                        if alt > 0:
+                            folium.CircleMarker([lat, lon], radius=6, color="orange", fill=True, fill_opacity=0.9, tooltip=tooltip).add_to(m)
+                        else:
+                            folium.CircleMarker([lat, lon], radius=4, color="gray", fill=True, fill_opacity=0.3, tooltip=tooltip).add_to(m)
+                    
+                    # Draw flight line
+                    folium.PolyLine([(p[0], p[1]) for p in track_data], color="blue", weight=3).add_to(m)
+                    
+                    st_folium(m, width=900, height=600)
