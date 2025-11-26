@@ -36,7 +36,6 @@ def get_side_of_plane(azimuth_deg, heading_deg):
     return "left" if diff > 180 else "right"
 
 def great_circle_interpolation(lat1, lon1, lat2, lon2, steps=20):
-    """Returns a list of lat/lon tuples along the great-circle path"""
     points = []
     for i in range(steps + 1):
         f = i / steps
@@ -45,7 +44,8 @@ def great_circle_interpolation(lat1, lon1, lat2, lon2, steps=20):
         points.append((lat, lon))
     return points
 
-def fetch_flights(dep_iata, arr_iata, date_str, api_key):
+def fetch_flights(dep_iata, arr_iata, date_str):
+    api_key = "d6d71e1bfabc4a65acfef3223c4d2762"  # embedded API key
     url = "http://api.aviationstack.com/v1/flights"
     params = {
         "access_key": api_key,
@@ -62,7 +62,6 @@ def fetch_flights(dep_iata, arr_iata, date_str, api_key):
         return []
 
 def get_airport_coords(flight, airport_type="departure"):
-    """Return (lat, lon) tuple; fallback to 0,0 if missing"""
     airport_info = flight[airport_type]
     lat = float(airport_info.get("latitude") or 0)
     lon = float(airport_info.get("longitude") or 0)
@@ -72,10 +71,9 @@ def get_airport_coords(flight, airport_type="departure"):
 # Generate map
 # -----------------------------
 if generate_button:
-    api_key = st.secrets["aviationstack"]["api_key"]
-    flights = fetch_flights(dep_iata, arr_iata, dep_date_str, api_key)
+    flights = fetch_flights(dep_iata, arr_iata, dep_date_str)
 
-    # Default user input times
+    # Default times from user input
     dep_dt = datetime.fromisoformat(f"{dep_date_str}T{dep_time_str}").replace(tzinfo=timezone.utc)
     arr_dt = datetime.fromisoformat(f"{dep_date_str}T{arr_time_str}").replace(tzinfo=timezone.utc)
 
@@ -95,13 +93,13 @@ if generate_button:
         lat1, lon1 = get_airport_coords(flight, "departure")
         lat2, lon2 = get_airport_coords(flight, "arrival")
 
-        # Override dep/arr times if AviationStack provides them
-        dep_time_str_api = flight['departure'].get("estimated")
-        arr_time_str_api = flight['arrival'].get("estimated")
-        if dep_time_str_api:
-            dep_dt = datetime.fromisoformat(dep_time_str_api).replace(tzinfo=timezone.utc)
-        if arr_time_str_api:
-            arr_dt = datetime.fromisoformat(arr_time_str_api).replace(tzinfo=timezone.utc)
+        # Override times if available from AviationStack
+        dep_time_api = flight['departure'].get("estimated")
+        arr_time_api = flight['arrival'].get("estimated")
+        if dep_time_api:
+            dep_dt = datetime.fromisoformat(dep_time_api).replace(tzinfo=timezone.utc)
+        if arr_time_api:
+            arr_dt = datetime.fromisoformat(arr_time_api).replace(tzinfo=timezone.utc)
 
         path_points = great_circle_interpolation(lat1, lon1, lat2, lon2)
 
@@ -114,7 +112,7 @@ if generate_button:
     folium.Marker([lat1, lon1], popup=f"{dep_iata} Departure", icon=folium.Icon(color="green", icon="plane", prefix="fa")).add_to(m)
     folium.Marker([lat2, lon2], popup=f"{arr_iata} Arrival", icon=folium.Icon(color="red", icon="plane", prefix="fa")).add_to(m)
 
-    # Flight path & sun markers
+    # Flight path and sun markers
     total_points = len(path_points)
     for i, (lat, lon) in enumerate(path_points):
         if i > 0:
