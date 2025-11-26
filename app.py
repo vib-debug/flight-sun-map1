@@ -17,7 +17,7 @@ st.title("Flight Sun Position Visualizer")
 @st.cache_data
 def load_airports():
     airports = {}
-    with open("airports.dat", newline='', encoding='utf-8') as csvfile:
+    with open("airports.dat.txt", newline='', encoding='utf-8') as csvfile:
         reader = csv.reader(csvfile)
         for row in reader:
             iata = row[4]
@@ -39,7 +39,7 @@ def interpolate_great_circle(lat1, lon1, lat2, lon2, steps=100):
     points = []
     for i in range(steps + 1):
         f = i / steps
-        # Simple linear interpolation approximation (great-circle smoothing)
+        # Linear interpolation approximation
         lat = lat1 + (lat2 - lat1) * f
         lon = lon1 + (lon2 - lon1) * f
         points.append((lat, lon))
@@ -93,7 +93,7 @@ if generate_button:
         arr_dt_local = datetime.fromisoformat(arr_time_str)
 
         dep_dt_utc = local_to_utc(dep_data['lat'], dep_data['lon'], dep_dt_local)
-        arr_dt_utc = local_to_utc(arr_data['lat'], arr_data['lon'], arr_time_local)
+        arr_dt_utc = local_to_utc(arr_data['lat'], arr_data['lon'], arr_dt_local)  # fixed typo
 
         # Build map
         m = folium.Map(
