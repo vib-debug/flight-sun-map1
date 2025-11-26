@@ -4,8 +4,7 @@ import folium
 from datetime import datetime, timedelta
 import pytz
 from math import radians, degrees, atan2, sin, cos, sqrt
-from astral import LocationInfo
-from astral.sun import sun
+from astral import solar
 
 st.set_page_config(layout="wide")
 
@@ -32,21 +31,14 @@ def interpolate_path(lat1, lon1, lat2, lon2, steps=40):
     return points
 
 def sun_position(lat, lon, dt):
-    loc = LocationInfo(latitude=lat, longitude=lon)
-    s = sun(loc.observer, date=dt)
-    solar_noon = s["noon"]
-
-    # Sun azimuth & elevation
-    altitude = loc.solar_elevation(dt)
-    azimuth = loc.solar_azimuth(dt)
-
+    """Returns sun altitude and azimuth at a given location and time."""
+    altitude = solar.elevation(lat, lon, dt)
+    azimuth = solar.azimuth(lat, lon, dt)
     return altitude, azimuth
 
 def get_side_of_plane(azimuth, heading):
     diff = (azimuth - heading + 360) % 360
-    if diff > 180:
-        return "left"
-    return "right"
+    return "left" if diff > 180 else "right"
 
 def calculate_heading(lat1, lon1, lat2, lon2):
     lon1, lon2, lat1, lat2 = map(radians, [lon1, lon2, lat1, lat2])
@@ -69,7 +61,7 @@ with col1:
 
 with col2:
     arr_lat = st.number_input("Arrival Latitude", value=40.6413)
-    arr_lon = st.number_input("Arrival Longitude", value= -73.7781)
+    arr_lon = st.number_input("Arrival Longitude", value=-73.7781)
     arr_time = st.text_input("Arrival Time (YYYY-MM-DD HH:MM)", value="2023-12-01 11:00")
 
 # -----------------------------
@@ -80,7 +72,7 @@ try:
     dep_dt = datetime.fromisoformat(dep_time)
     arr_dt = datetime.fromisoformat(arr_time)
 except:
-    st.error("Invalid date format!")
+    st.error("Invalid date format! Use YYYY-MM-DD HH:MM")
     st.stop()
 
 # -----------------------------
@@ -96,9 +88,6 @@ folium.PolyLine([(dep_lat, dep_lon), (arr_lat, arr_lon)], color="blue", weight=3
 points = interpolate_path(dep_lat, dep_lon, arr_lat, arr_lon, steps=40)
 dt_step = (arr_dt - dep_dt) / len(points)
 
-sunny_points = []
-shade_points = []
-
 for i, (lat, lon) in enumerate(points):
     current_time = dep_dt + i * dt_step
     heading = calculate_heading(*points[i-1], lat, lon) if i > 0 else 90
@@ -113,7 +102,7 @@ for i, (lat, lon) in enumerate(points):
             radius=6,
             color="orange",
             fill=True,
-            fill_opacity=0.9
+            fill_opacity=0.9,
         ).add_to(m)
     else:
         folium.CircleMarker(
@@ -121,11 +110,11 @@ for i, (lat, lon) in enumerate(points):
             radius=4,
             color="gray",
             fill=True,
-            fill_opacity=0.3
+            fill_opacity=0.3,
         ).add_to(m)
 
 # -----------------------------
 # DISPLAY MAP — NO FLICKERING
 # -----------------------------
 
-st_data = st_folium(m, width=900, height=600)
+st_folium(m, width=900, height=600)
