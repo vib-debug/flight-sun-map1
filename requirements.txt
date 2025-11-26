@@ -1,8 +1,5 @@
 streamlit
 folium
 streamlit-folium
-pysolar
+astral
 pytz
-timezonefinder
-pandas
-geopy
