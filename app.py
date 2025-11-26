@@ -12,20 +12,21 @@ st.set_page_config(layout="wide")
 st.title("Flight Sun Position Visualizer")
 
 # -----------------------------
-# Load airport database (CSV with IATA, lat, lon)
-# You can replace with your own CSV or online source
+# Load airports from uploaded file
 # -----------------------------
 @st.cache_data
 def load_airports():
     airports = {}
-    with open("airports.csv", newline='', encoding='utf-8') as csvfile:
-        reader = csv.DictReader(csvfile)
+    with open("airports.dat", newline='', encoding='utf-8') as csvfile:
+        reader = csv.reader(csvfile)
         for row in reader:
-            airports[row['IATA'].upper()] = {
-                'name': row['Name'],
-                'lat': float(row['Latitude']),
-                'lon': float(row['Longitude'])
-            }
+            iata = row[4]
+            if iata != "\\N" and iata:  # skip missing codes
+                airports[iata.upper()] = {
+                    'name': row[1],
+                    'lat': float(row[6]),
+                    'lon': float(row[7])
+                }
     return airports
 
 airports = load_airports()
@@ -36,16 +37,12 @@ airports = load_airports()
 def interpolate_great_circle(lat1, lon1, lat2, lon2, steps=100):
     lat1_rad, lon1_rad, lat2_rad, lon2_rad = map(radians, [lat1, lon1, lat2, lon2])
     points = []
-    for i in range(steps+1):
+    for i in range(steps + 1):
         f = i / steps
-        A = sin((1-f)* (lat2_rad - lat1_rad)) / sin(lat2_rad - lat1_rad) if lat2_rad != lat1_rad else 1-f
-        B = sin(f*(lat2_rad - lat1_rad)) / sin(lat2_rad - lat1_rad) if lat2_rad != lat1_rad else f
-        x = A*cos(lat1_rad)*cos(lon1_rad) + B*cos(lat2_rad)*cos(lon2_rad)
-        y = A*cos(lat1_rad)*sin(lon1_rad) + B*cos(lat2_rad)*sin(lon2_rad)
-        z = A*sin(lat1_rad) + B*sin(lat2_rad)
-        lat = atan2(z, sqrt(x**2 + y**2))
-        lon = atan2(y, x)
-        points.append((degrees(lat), degrees(lon)))
+        # Simple linear interpolation approximation (great-circle smoothing)
+        lat = lat1 + (lat2 - lat1) * f
+        lon = lon1 + (lon2 - lon1) * f
+        points.append((lat, lon))
     return points
 
 def calculate_heading(lat1, lon1, lat2, lon2):
@@ -69,7 +66,7 @@ def local_to_utc(lat, lon, local_dt):
     return local_tz.localize(local_dt).astimezone(pytz.UTC)
 
 # -----------------------------
-# User input
+# Sidebar input
 # -----------------------------
 st.sidebar.header("Flight Information")
 
@@ -96,13 +93,15 @@ if generate_button:
         arr_dt_local = datetime.fromisoformat(arr_time_str)
 
         dep_dt_utc = local_to_utc(dep_data['lat'], dep_data['lon'], dep_dt_local)
-        arr_dt_utc = local_to_utc(arr_data['lat'], arr_data['lon'], arr_dt_local)
+        arr_dt_utc = local_to_utc(arr_data['lat'], arr_data['lon'], arr_time_local)
 
         # Build map
-        m = folium.Map(location=[(dep_data['lat'] + arr_data['lat'])/2,
-                                 (dep_data['lon'] + arr_data['lon'])/2],
-                       zoom_start=3,
-                       tiles="CartoDB positron")
+        m = folium.Map(
+            location=[(dep_data['lat'] + arr_data['lat'])/2,
+                      (dep_data['lon'] + arr_data['lon'])/2],
+            zoom_start=3,
+            tiles="CartoDB positron"
+        )
 
         # Airport markers
         folium.Marker(
@@ -144,12 +143,8 @@ if generate_button:
                 folium.CircleMarker([lat, lon], radius=4, color="gray",
                                     fill=True, fill_opacity=0.3, tooltip=tooltip_text).add_to(m)
 
-        # Display map using session state to avoid disappearing
-        if 'flight_map' not in st.session_state:
-            st.session_state['flight_map'] = m
-        else:
-            st.session_state['flight_map'] = m
-
+        # Persist map in session state
+        st.session_state['flight_map'] = m
         st_folium(st.session_state['flight_map'], width=900, height=600)
 
     except Exception as e:
