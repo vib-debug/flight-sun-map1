@@ -4,7 +4,6 @@ import folium
 from datetime import datetime, timedelta, timezone
 from math import radians, degrees, sin, cos, atan2
 from pysolar.solar import get_altitude, get_azimuth
-
 import requests
 
 st.set_page_config(layout="wide")
@@ -16,7 +15,9 @@ st.title("Flight Sun Map with AviationStack")
 st.sidebar.header("Flight Information")
 dep_iata = st.sidebar.text_input("Departure Airport (IATA)", "IST").upper()
 arr_iata = st.sidebar.text_input("Arrival Airport (IATA)", "JFK").upper()
-dep_date_str = st.sidebar.text_input("Departure Date (YYYY-MM-DD)", "2023-12-01")
+dep_date_str = st.sidebar.text_input("Flight Date (YYYY-MM-DD)", "2023-12-01")
+dep_time_str = st.sidebar.text_input("Departure Time (HH:MM, local)", "08:00")
+arr_time_str = st.sidebar.text_input("Arrival Time (HH:MM, local)", "16:00")
 generate_button = st.sidebar.button("Generate Flight Map")
 
 # -----------------------------
@@ -60,6 +61,13 @@ def fetch_flights(dep_iata, arr_iata, date_str, api_key):
         st.error(f"AviationStack API error: {resp.status_code}")
         return []
 
+def get_airport_coords(flight, airport_type="departure"):
+    """Return (lat, lon) tuple; fallback to 0,0 if missing"""
+    airport_info = flight[airport_type]
+    lat = float(airport_info.get("latitude") or 0)
+    lon = float(airport_info.get("longitude") or 0)
+    return lat, lon
+
 # -----------------------------
 # Generate map
 # -----------------------------
@@ -67,9 +75,12 @@ if generate_button:
     api_key = st.secrets["aviationstack"]["api_key"]
     flights = fetch_flights(dep_iata, arr_iata, dep_date_str, api_key)
 
+    # Default user input times
+    dep_dt = datetime.fromisoformat(f"{dep_date_str}T{dep_time_str}").replace(tzinfo=timezone.utc)
+    arr_dt = datetime.fromisoformat(f"{dep_date_str}T{arr_time_str}").replace(tzinfo=timezone.utc)
+
     if not flights:
         st.warning("No flights found. Using great-circle path approximation.")
-        # Fallback: just coordinates of airports
         airport_coords = {
             "IST": (41.275278, 28.751944),
             "JFK": (40.6413111, -73.7781391),
@@ -79,16 +90,22 @@ if generate_button:
         path_points = great_circle_interpolation(lat1, lon1, lat2, lon2)
         flight_name = f"{dep_iata}-{arr_iata} (approx.)"
     else:
-        flight = flights[0]  # pick first matching flight
+        flight = flights[0]
         flight_name = f"{flight['flight']['iata']} ({dep_iata}-{arr_iata})"
-        # Use coordinates if available, else fallback
-        lat1 = float(flight['departure']['airport']['latitude'] or 0)
-        lon1 = float(flight['departure']['airport']['longitude'] or 0)
-        lat2 = float(flight['arrival']['airport']['latitude'] or 0)
-        lon2 = float(flight['arrival']['airport']['longitude'] or 0)
+        lat1, lon1 = get_airport_coords(flight, "departure")
+        lat2, lon2 = get_airport_coords(flight, "arrival")
+
+        # Override dep/arr times if AviationStack provides them
+        dep_time_str_api = flight['departure'].get("estimated")
+        arr_time_str_api = flight['arrival'].get("estimated")
+        if dep_time_str_api:
+            dep_dt = datetime.fromisoformat(dep_time_str_api).replace(tzinfo=timezone.utc)
+        if arr_time_str_api:
+            arr_dt = datetime.fromisoformat(arr_time_str_api).replace(tzinfo=timezone.utc)
+
         path_points = great_circle_interpolation(lat1, lon1, lat2, lon2)
 
-    # Build map
+    # Map setup
     mid_lat = (lat1 + lat2) / 2
     mid_lon = (lon1 + lon2) / 2
     m = folium.Map(location=[mid_lat, mid_lon], zoom_start=3, tiles="CartoDB positron")
@@ -97,7 +114,7 @@ if generate_button:
     folium.Marker([lat1, lon1], popup=f"{dep_iata} Departure", icon=folium.Icon(color="green", icon="plane", prefix="fa")).add_to(m)
     folium.Marker([lat2, lon2], popup=f"{arr_iata} Arrival", icon=folium.Icon(color="red", icon="plane", prefix="fa")).add_to(m)
 
-    # Plot flight path with sun markers
+    # Flight path & sun markers
     total_points = len(path_points)
     for i, (lat, lon) in enumerate(path_points):
         if i > 0:
@@ -105,22 +122,14 @@ if generate_button:
         else:
             heading = 90
 
-        # Estimate time along flight
-        dep_time = datetime.fromisoformat(dep_date_str + "T08:00:00").replace(tzinfo=timezone.utc)
-        arr_time = datetime.fromisoformat(dep_date_str + "T16:00:00").replace(tzinfo=timezone.utc)
-        current_time = dep_time + (arr_time - dep_time) * (i / (total_points - 1))
-
+        current_time = dep_dt + (arr_dt - dep_dt) * (i / (total_points - 1))
         alt = get_altitude(lat, lon, current_time)
         azi = get_azimuth(lat, lon, current_time)
         side = get_side_of_plane(azi, heading)
-
         tooltip = f"Time: {current_time.strftime('%H:%M UTC')}\nSun Side: {side}\nSun Altitude: {alt:.1f}°"
-
         color = "orange" if alt > 0 else "gray"
         folium.CircleMarker([lat, lon], radius=6 if alt > 0 else 4, color=color, fill=True, fill_opacity=0.9, tooltip=tooltip).add_to(m)
 
-    # Flight line
     folium.PolyLine(path_points, color="blue", weight=3).add_to(m)
-
     st.subheader(f"Flight Path: {flight_name}")
     st_folium(m, width=900, height=600)
