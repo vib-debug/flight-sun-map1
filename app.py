@@ -1,147 +1,131 @@
 import streamlit as st
-import folium
 from streamlit_folium import st_folium
+import folium
 from datetime import datetime, timedelta
-from math import radians, degrees, sin, cos, atan2, asin, sqrt
-from pysolar.solar import get_altitude, get_azimuth
 import pytz
-from timezonefinder import TimezoneFinder
-import pandas as pd
+from math import radians, degrees, atan2, sin, cos, sqrt
+from astral import LocationInfo
+from astral.sun import sun
 
-# -------------------------------------------
-# Page Setup
-# -------------------------------------------
 st.set_page_config(layout="wide")
-st.title("✈️ Flight Sun Position Map (Stable Version)")
-st.write("This version prevents map flickering and ensures accurate sun positioning along the flight path.")
 
-# -------------------------------------------
-# Load Airport Database
-# -------------------------------------------
-@st.cache_data
-def load_airports():
-    url = 'https://raw.githubusercontent.com/jpatokal/openflights/master/data/airports.dat'
-    cols = ['id','name','city','country','iata','icao','lat','lon','alt','tz','dst','tz_db','type','source']
-    df = pd.read_csv(url, header=None, names=cols)
-    df = df[df['iata'] != '\\N']   # Remove invalid entries
-    return df
+st.title("Flight Sun Position Visualizer")
 
-airports = load_airports()
-iata_coords = {row['iata']: (row['lat'], row['lon']) for _, row in airports.iterrows()}
-tf = TimezoneFinder()
+# -----------------------------
+# Utility functions
+# -----------------------------
 
-# -------------------------------------------
-# User Inputs
-# -------------------------------------------
-origin = st.text_input("Origin IATA Code", "IST")
-destination = st.text_input("Destination IATA Code", "JFK")
-takeoff_str = st.text_input("Takeoff Time (YYYY-MM-DD HH:MM)", "2023-12-01 08:00")
-landing_str = st.text_input("Landing Time (YYYY-MM-DD HH:MM)", "2023-12-01 11:00")
+def haversine(lat1, lon1, lat2, lon2):
+    R = 6371
+    dlat = radians(lat2-lat1)
+    dlon = radians(lon2-lon1)
+    a = sin(dlat/2)**2 + cos(radians(lat1))*cos(radians(lat2))*sin(dlon/2)**2
+    return 2 * R * atan2(sqrt(a), sqrt(1-a))
 
-clicked = st.button("Generate Sun Map")
-
-# -------------------------------------------
-# Helper Functions
-# -------------------------------------------
-def bearing(lat1, lon1, lat2, lon2):
-    dLon = radians(lon2 - lon1)
-    lat1_r, lat2_r = radians(lat1), radians(lat2)
-    x = sin(dLon) * cos(lat2_r)
-    y = cos(lat1_r)*sin(lat2_r) - sin(lat1_r)*cos(lat2_r)*cos(dLon)
-    return (degrees(atan2(x, y)) + 360) % 360
-
-def interpolate_great_circle(lat1, lon1, lat2, lon2, steps=70):
+def interpolate_path(lat1, lon1, lat2, lon2, steps=40):
     points = []
-    lat1_r, lon1_r = radians(lat1), radians(lon1)
-    lat2_r, lon2_r = radians(lat2), radians(lon2)
-
-    d = 2 * asin(sqrt(
-        sin((lat2_r - lat1_r) / 2)**2 +
-        cos(lat1_r) * cos(lat2_r) * sin((lon2_r - lon1_r) / 2)**2
-    ))
-
-    for i in range(steps + 1):
-        f = i / steps
-        A = sin((1 - f) * d) / sin(d)
-        B = sin(f * d) / sin(d)
-        x = A * cos(lat1_r) * cos(lon1_r) + B * cos(lat2_r) * cos(lon2_r)
-        y = A * cos(lat1_r) * sin(lon1_r) + B * cos(lat2_r) * sin(lon2_r)
-        z = A * sin(lat1_r) + B * sin(lat2_r)
-
-        lat_i = atan2(z, sqrt(x*x + y*y))
-        lon_i = atan2(y, x)
-        points.append((degrees(lat_i), degrees(lon_i)))
-
+    for i in range(steps+1):
+        f = i/steps
+        lat = lat1 + (lat2 - lat1) * f
+        lon = lon1 + (lon2 - lon1) * f
+        points.append((lat, lon))
     return points
 
-def localize_time(dt_naive, tzname):
-    return pytz.timezone(tzname).localize(dt_naive)
+def sun_position(lat, lon, dt):
+    loc = LocationInfo(latitude=lat, longitude=lon)
+    s = sun(loc.observer, date=dt)
+    solar_noon = s["noon"]
 
-# -------------------------------------------
-# Map Generation
-# -------------------------------------------
-def generate_flight_map():
-    lat1, lon1 = iata_coords[origin]
-    lat2, lon2 = iata_coords[destination]
+    # Sun azimuth & elevation
+    altitude = loc.solar_elevation(dt)
+    azimuth = loc.solar_azimuth(dt)
 
-    takeoff_naive = datetime.fromisoformat(takeoff_str)
-    landing_naive = datetime.fromisoformat(landing_str)
+    return altitude, azimuth
 
-    tz_o = tf.timezone_at(lat=lat1, lng=lon1) or "UTC"
-    tz_d = tf.timezone_at(lat=lat2, lng=lon2) or "UTC"
+def get_side_of_plane(azimuth, heading):
+    diff = (azimuth - heading + 360) % 360
+    if diff > 180:
+        return "left"
+    return "right"
 
-    takeoff_utc = localize_time(takeoff_naive, tz_o).astimezone(pytz.UTC)
-    landing_utc = localize_time(landing_naive, tz_d).astimezone(pytz.UTC)
+def calculate_heading(lat1, lon1, lat2, lon2):
+    lon1, lon2, lat1, lat2 = map(radians, [lon1, lon2, lat1, lat2])
+    dlon = lon2 - lon1
+    x = sin(dlon) * cos(lat2)
+    y = cos(lat1)*sin(lat2) - sin(lat1)*cos(lat2)*cos(dlon)
+    bearing = degrees(atan2(x,y))
+    return (bearing + 360) % 360
 
-    path = interpolate_great_circle(lat1, lon1, lat2, lon2, steps=70)
-    total_seconds = int((landing_utc - takeoff_utc).total_seconds())
-    step_seconds = total_seconds // (len(path) - 1)
+# -----------------------------
+# User input
+# -----------------------------
 
-    flight_bear = bearing(lat1, lon1, lat2, lon2)
+col1, col2 = st.columns(2)
 
-    m = folium.Map(location=[(lat1 + lat2)/2, (lon1 + lon2)/2], zoom_start=3)
+with col1:
+    dep_lat = st.number_input("Departure Latitude", value=41.2753)
+    dep_lon = st.number_input("Departure Longitude", value=28.7519)
+    dep_time = st.text_input("Departure Time (YYYY-MM-DD HH:MM)", value="2023-12-01 08:00")
 
-    for i, (plat, plon) in enumerate(path):
-        t = takeoff_utc + timedelta(seconds=i * step_seconds)
+with col2:
+    arr_lat = st.number_input("Arrival Latitude", value=40.6413)
+    arr_lon = st.number_input("Arrival Longitude", value= -73.7781)
+    arr_time = st.text_input("Arrival Time (YYYY-MM-DD HH:MM)", value="2023-12-01 11:00")
 
-        sun_el = get_altitude(plat, plon, t)  # elevation
-        sun_az = get_azimuth(plat, plon, t)   # azimuth
+# -----------------------------
+# Parse datetimes
+# -----------------------------
 
-        side = "right" if 0 <= ((sun_az - flight_bear + 360) % 360) <= 180 else "left"
+try:
+    dep_dt = datetime.fromisoformat(dep_time)
+    arr_dt = datetime.fromisoformat(arr_time)
+except:
+    st.error("Invalid date format!")
+    st.stop()
 
-        # Plane marker
-        folium.CircleMarker([plat, plon], radius=3, color="black", fill=True).add_to(m)
+# -----------------------------
+# Build the map
+# -----------------------------
 
-        # Sun marker ONLY if above horizon
-        if sun_el > 0:
-            folium.Marker(
-                [plat, plon],
-                icon=folium.DivIcon(
-                    html="<div style='font-size:22px; color:orange;'>☀</div>"
-                ),
-                popup=f"""
-                    <b>Time (UTC):</b> {t}<br>
-                    <b>Sun side:</b> {side}<br>
-                    <b>Sun Elevation:</b> {sun_el:.1f}°
-                """
-            ).add_to(m)
+m = folium.Map(location=[(dep_lat+arr_lat)/2, (dep_lon+arr_lon)/2], zoom_start=3)
 
-    # Draw the flight path line
-    folium.PolyLine(path, color="blue", weight=3).add_to(m)
+# Flight path
+folium.PolyLine([(dep_lat, dep_lon), (arr_lat, arr_lon)], color="blue", weight=3).add_to(m)
 
-    return m
+# Compute steps
+points = interpolate_path(dep_lat, dep_lon, arr_lat, arr_lon, steps=40)
+dt_step = (arr_dt - dep_dt) / len(points)
 
-# -------------------------------------------
-# Session-State Controlled Rendering
-# -------------------------------------------
-if "map" not in st.session_state:
-    st.session_state.map = None
+sunny_points = []
+shade_points = []
 
-if clicked:
-    if origin not in iata_coords or destination not in iata_coords:
-        st.error("Invalid IATA code.")
+for i, (lat, lon) in enumerate(points):
+    current_time = dep_dt + i * dt_step
+    heading = calculate_heading(*points[i-1], lat, lon) if i > 0 else 90
+
+    altitude, azimuth = sun_position(lat, lon, current_time)
+    side = get_side_of_plane(azimuth, heading)
+
+    # Sun marker
+    if altitude > 0:
+        folium.CircleMarker(
+            location=[lat, lon],
+            radius=6,
+            color="orange",
+            fill=True,
+            fill_opacity=0.9
+        ).add_to(m)
     else:
-        st.session_state.map = generate_flight_map()
+        folium.CircleMarker(
+            location=[lat, lon],
+            radius=4,
+            color="gray",
+            fill=True,
+            fill_opacity=0.3
+        ).add_to(m)
 
-if st.session_state.map:
-    st_folium(st.session_state.map, width=900, height=550)
+# -----------------------------
+# DISPLAY MAP — NO FLICKERING
+# -----------------------------
+
+st_data = st_folium(m, width=900, height=600)
