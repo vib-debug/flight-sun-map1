@@ -17,7 +17,7 @@ st.title("Flight Sun Position Visualizer")
 @st.cache_data
 def load_airports():
     airports = {}
-    with open("airports.dat.txt", newline='', encoding='utf-8') as csvfile:
+    with open("airports.dat", newline='', encoding='utf-8') as csvfile:
         reader = csv.reader(csvfile)
         for row in reader:
             iata = row[4]
